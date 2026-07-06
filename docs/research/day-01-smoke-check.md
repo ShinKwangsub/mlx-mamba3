@@ -100,6 +100,37 @@ PYTHONPATH=. .venv/bin/python examples/generate.py
 - 새 모델에 weight load 성공
 - 원본 모델과 load된 모델의 출력 차이 `0.0`
 
+### 6. toy LoRA fine-tuning example
+
+실행:
+
+```bash
+PYTHONPATH=. .venv/bin/python examples/finetune_tinystories.py
+```
+
+결과:
+
+- base parameter는 freeze되고 LoRA parameter만 trainable로 잡혔다.
+- trainable array는 총 8개였다.
+- 50 step 동안 loss가 내려갔다.
+
+```text
+Initial Loss: 5.4158
+Final Loss:   0.8361
+Loss drop:    4.5798
+```
+
+확인한 의미:
+
+- LoRA wrapper와 compiled training step이 toy setting에서 동작한다.
+- 작은 synthetic dataset에 대해 모델이 loss를 낮출 수 있다.
+
+아직 의미하지 않는 것:
+
+- 실제 TinyStories dataset으로 학습했다는 뜻은 아니다. 현재 예제는 synthetic token data를 사용한다.
+- 대화 중 online learning이 가능하다는 뜻도 아니다.
+- pretrained Mamba-3 checkpoint를 fine-tuning할 수 있다는 뜻도 아니다.
+
 ## 오늘 발견한 작은 주의점
 
 - `mlx` module에는 `__version__` 속성이 없었다. 버전 확인은 `importlib.metadata.version("mlx")`로 해야 한다.
@@ -116,6 +147,7 @@ PYTHONPATH=. .venv/bin/python examples/generate.py
 - cache 기반 step/prefill path
 - PyTorch reference와의 numerical parity
 - safetensors 저장/로드
+- toy LoRA fine-tuning
 
 아직 없는 것:
 
@@ -132,7 +164,7 @@ PYTHONPATH=. .venv/bin/python examples/generate.py
 
 ## 다음 작은 검증 후보
 
-1. `examples/finetune_tinystories.py`를 실행해서 toy LoRA training이 현재 worktree에서도 동작하는지 확인한다.
-2. 아주 작은 한국어 텍스트를 token id로 바꾸는 임시 tokenizer를 만든다.
-3. tiny Mamba가 작은 고정 corpus를 overfit할 수 있는지 확인한다.
-4. 저장한 checkpoint를 다시 load해서 같은 prompt에 대해 동일한 generation이 나오는지 확인한다.
+1. 아주 작은 한국어 텍스트를 token id로 바꾸는 임시 tokenizer를 만든다.
+2. tiny Mamba가 작은 고정 corpus를 overfit할 수 있는지 확인한다.
+3. 저장한 checkpoint를 다시 load해서 같은 prompt에 대해 동일한 generation이 나오는지 확인한다.
+4. LoRA adapter만 저장/로드할 수 있는지 확인한다.
