@@ -205,3 +205,56 @@ tests.test_tiny_korean_pipeline: Ran 3 tests, OK
 2. overfit 전후 generation sample을 사람이 읽을 수 있게 저장한다.
 3. 학습 loss curve를 JSONL로 기록한다.
 4. tiny corpus를 조금 바꿨을 때 모델이 얼마나 빨리 새 패턴을 외우는지 확인한다.
+
+위 후보들도 `examples/tiny_korean_overfit.py`와 `tests/test_tiny_overfit_artifacts.py`로 최소 구현과 검증을 완료했다.
+
+실행:
+
+```bash
+PYTHONPATH=. .venv/bin/python examples/tiny_korean_overfit.py --out-dir /tmp/mlx-mamba3-tiny-korean-overfit
+PYTHONPATH=. .venv/bin/python -m unittest tests.test_tiny_overfit_artifacts -v
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
+```
+
+결과:
+
+```text
+tests.test_tiny_overfit_artifacts: Ran 2 tests, OK
+전체 테스트: Ran 17 tests, OK
+```
+
+생성되는 artifact:
+
+- `summary.json`: base/adapted loss와 artifact 경로
+- `loss_curve.jsonl`: step별 loss curve
+- `samples.md`: 학습 전, base overfit 후, adapted corpus 학습 후 generation sample
+- `tokenizer.json`: toy character tokenizer
+- `model.safetensors`: 마지막 모델 checkpoint
+
+CLI 실행 예시 결과:
+
+```text
+Base loss: 5.2542 -> 0.4343
+Adapted loss: 5.3280 -> 0.4473
+Base loss after adaptation: 4.1675
+```
+
+확인한 의미:
+
+- tiny overfit 검증을 사람이 실행할 수 있는 CLI로 만들었다.
+- loss curve를 JSONL로 남길 수 있다.
+- generation sample을 사람이 읽을 수 있는 Markdown으로 남길 수 있다.
+- corpus를 바꿨을 때 작은 모델이 새 패턴도 빠르게 외울 수 있다.
+
+중요한 한계:
+
+- adapted corpus를 학습한 뒤 base corpus loss가 크게 나빠졌다. 이는 작은 모델에서 새 패턴 학습이 기존 패턴을 방해할 수 있다는 초기 신호다.
+- 이것은 online learning 가능성의 증거가 아니라, 오히려 online learning을 조심해야 한다는 경고에 가깝다.
+- sample 생성에서는 모델의 padded vocab id가 나오지 않도록 tokenizer vocab 범위로 logits를 제한했다. 이 제한이 없으면 사람이 읽을 수 없는 `<unk>`가 쉽게 나온다.
+
+다음 작은 검증 후보:
+
+1. base corpus를 잊지 않도록 replay를 섞으면 adapted 학습 후 base loss가 덜 망가지는지 확인한다.
+2. full fine-tuning과 LoRA adapter fine-tuning의 forgetting 정도를 비교한다.
+3. `samples.md`만 보고는 품질 판단이 어려우므로 loss와 sample을 함께 보는 작은 report를 만든다.
+4. toy tokenizer 대신 byte-level tokenizer를 붙였을 때 padded vocab 문제와 generation sample이 어떻게 달라지는지 확인한다.
