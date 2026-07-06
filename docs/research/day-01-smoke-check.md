@@ -164,7 +164,44 @@ Loss drop:    4.5798
 
 ## 다음 작은 검증 후보
 
+아래 후보들은 `tests/test_tiny_korean_pipeline.py`로 최소 구현과 검증을 완료했다.
+
 1. 아주 작은 한국어 텍스트를 token id로 바꾸는 임시 tokenizer를 만든다.
 2. tiny Mamba가 작은 고정 corpus를 overfit할 수 있는지 확인한다.
 3. 저장한 checkpoint를 다시 load해서 같은 prompt에 대해 동일한 generation이 나오는지 확인한다.
 4. LoRA adapter만 저장/로드할 수 있는지 확인한다.
+
+실행:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m unittest tests.test_tiny_korean_pipeline -v
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
+```
+
+결과:
+
+```text
+tests.test_tiny_korean_pipeline: Ran 3 tests, OK
+전체 테스트: Ran 15 tests, OK
+```
+
+확인한 의미:
+
+- toy character tokenizer로 한국어 문자열을 token id로 바꾸고 다시 복원할 수 있다.
+- 아주 작은 한국어 고정 corpus에 대해 tiny Mamba가 loss를 빠르게 낮출 수 있다.
+- 학습된 full checkpoint를 저장/로드한 뒤 logits와 deterministic generation을 재현할 수 있다.
+- LoRA adapter parameter만 추출, 저장, 로드할 수 있다.
+
+아직 의미하지 않는 것:
+
+- 이 tokenizer가 실제 한국어 모델 학습에 적합하다는 뜻은 아니다. 문자 단위 toy tokenizer일 뿐이다.
+- tiny corpus overfit은 일반화 성능을 의미하지 않는다.
+- LoRA adapter 저장/로드가 실시간 학습 안정성을 보장하지 않는다.
+- 아직 live chat, memory, routing, cognitive loop는 검증하지 않았다.
+
+다음 작은 검증 후보:
+
+1. toy tokenizer와 tiny overfit을 CLI script로 실행 가능하게 만든다.
+2. overfit 전후 generation sample을 사람이 읽을 수 있게 저장한다.
+3. 학습 loss curve를 JSONL로 기록한다.
+4. tiny corpus를 조금 바꿨을 때 모델이 얼마나 빨리 새 패턴을 외우는지 확인한다.
