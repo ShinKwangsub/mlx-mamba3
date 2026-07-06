@@ -258,3 +258,50 @@ Base loss after adaptation: 4.1675
 2. full fine-tuning과 LoRA adapter fine-tuning의 forgetting 정도를 비교한다.
 3. `samples.md`만 보고는 품질 판단이 어려우므로 loss와 sample을 함께 보는 작은 report를 만든다.
 4. toy tokenizer 대신 byte-level tokenizer를 붙였을 때 padded vocab 문제와 generation sample이 어떻게 달라지는지 확인한다.
+
+위 1번 후보는 `examples/tiny_replay_comparison.py`와 `tests/test_tiny_replay_comparison.py`로 최소 구현과 검증을 완료했다.
+
+실행:
+
+```bash
+PYTHONPATH=. .venv/bin/python examples/tiny_replay_comparison.py --out-dir /tmp/mlx-mamba3-replay-comparison
+PYTHONPATH=. .venv/bin/python -m unittest tests.test_tiny_replay_comparison -v
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
+```
+
+결과:
+
+```text
+tests.test_tiny_replay_comparison: Ran 2 tests, OK
+전체 테스트: Ran 19 tests, OK
+```
+
+CLI 실행 예시 결과:
+
+```text
+Base loss after base training: 1.1823
+No replay base loss after adaptation: 3.9361
+With replay base loss after adaptation: 0.5243
+No replay adapted loss: 0.4721
+With replay adapted loss: 0.6531
+```
+
+확인한 의미:
+
+- adapted corpus만 학습하면 base corpus loss가 크게 나빠진다.
+- base corpus를 replay로 함께 섞으면 base corpus loss 악화가 크게 줄어든다.
+- replay를 섞은 경우에도 adapted corpus loss는 base 학습 직후보다 내려간다.
+
+중요한 한계:
+
+- 이 결과는 아주 작은 toy corpus와 tiny model에서만 확인된 것이다.
+- replay가 online learning의 충분한 해법이라는 뜻은 아니다.
+- replay를 섞으면 새 corpus만 학습하는 것보다 adapted loss가 약간 높게 남았다. 즉 "덜 잊기"와 "새 패턴만 빠르게 외우기" 사이에 tradeoff가 생길 수 있다.
+- 지금은 full fine-tuning 기준이며, LoRA adapter에서 같은 현상이 나타나는지는 아직 검증하지 않았다.
+
+다음 작은 검증 후보:
+
+1. full fine-tuning과 LoRA adapter fine-tuning의 forgetting 정도를 비교한다.
+2. replay 비율을 바꿨을 때 base/adapted loss tradeoff가 어떻게 움직이는지 확인한다.
+3. loss와 sample을 함께 보여주는 작은 Markdown report를 생성한다.
+4. toy tokenizer 대신 byte-level tokenizer를 붙였을 때 padded vocab 문제와 generation sample이 어떻게 달라지는지 확인한다.

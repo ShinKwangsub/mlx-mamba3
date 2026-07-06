@@ -7,7 +7,7 @@ import mlx.optimizers as optim
 
 from .model import MambaConfig, MambaLMHeadModel
 from .toy_tokenizer import CharTokenizer
-from .weights import save_weights
+from .weights import load_weights, save_weights
 
 
 BASE_CORPUS = "광섭은 맘바를 연구한다.\n연구 노트는 한국어로 쓴다.\n" * 3
@@ -152,4 +152,81 @@ def run_tiny_korean_overfit(
         },
     }
     write_json(out_dir / "summary.json", summary)
+    return summary
+
+
+def run_replay_comparison(
+    out_dir: str | Path,
+    base_steps: int = 30,
+    adaptation_steps: int = 20,
+    learning_rate: float = 0.03,
+    seed: int = 13,
+):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    tokenizer = CharTokenizer.from_text(BASE_CORPUS + ADAPTED_CORPUS)
+    tokenizer.save(str(out_dir / "tokenizer.json"))
+
+    mx.random.seed(seed)
+    base_model = MambaLMHeadModel(make_tiny_config(tokenizer.vocab_size))
+    base_optimizer = optim.Adam(learning_rate=learning_rate)
+    base_loss_path = out_dir / "base_loss_curve.jsonl"
+    base_loss_path.write_text("", encoding="utf-8")
+    base_result = train_phase(base_model, base_optimizer, tokenizer, BASE_CORPUS, "base", base_steps, base_loss_path)
+
+    base_checkpoint = out_dir / "base_model.safetensors"
+    save_weights(base_model, str(base_checkpoint))
+    base_loss_after_base = float(language_model_loss(base_model, *make_next_token_batch(tokenizer, BASE_CORPUS)).item())
+    adapted_loss_before_adaptation = float(language_model_loss(base_model, *make_next_token_batch(tokenizer, ADAPTED_CORPUS)).item())
+
+    modes = {
+        "no_replay": ADAPTED_CORPUS,
+        "with_replay": BASE_CORPUS + ADAPTED_CORPUS,
+    }
+    mode_results = {}
+
+    for mode, adaptation_text in modes.items():
+        model = MambaLMHeadModel(make_tiny_config(tokenizer.vocab_size))
+        load_weights(model, str(base_checkpoint))
+        optimizer = optim.Adam(learning_rate=learning_rate)
+        loss_path = out_dir / f"{mode}_loss_curve.jsonl"
+        loss_path.write_text("", encoding="utf-8")
+
+        train_result = train_phase(model, optimizer, tokenizer, adaptation_text, mode, adaptation_steps, loss_path)
+        mode_results[mode] = {
+            "train": train_result,
+            "base_loss_after_adaptation": float(
+                language_model_loss(model, *make_next_token_batch(tokenizer, BASE_CORPUS)).item()
+            ),
+            "adapted_loss_after_adaptation": float(
+                language_model_loss(model, *make_next_token_batch(tokenizer, ADAPTED_CORPUS)).item()
+            ),
+            "loss_curve": str(loss_path),
+            "sample": generation_sample(model, tokenizer, "광섭은 맘바"),
+        }
+        save_weights(model, str(out_dir / f"{mode}_model.safetensors"))
+
+    summary = {
+        "base_steps": base_steps,
+        "adaptation_steps": adaptation_steps,
+        "learning_rate": learning_rate,
+        "seed": seed,
+        "vocab_size": tokenizer.vocab_size,
+        "base": base_result,
+        "base_loss_after_base": base_loss_after_base,
+        "adapted_loss_before_adaptation": adapted_loss_before_adaptation,
+        "no_replay": mode_results["no_replay"],
+        "with_replay": mode_results["with_replay"],
+        "artifacts": {
+            "base_loss_curve": str(base_loss_path),
+            "no_replay_loss_curve": mode_results["no_replay"]["loss_curve"],
+            "with_replay_loss_curve": mode_results["with_replay"]["loss_curve"],
+            "tokenizer": str(out_dir / "tokenizer.json"),
+            "base_model": str(base_checkpoint),
+            "no_replay_model": str(out_dir / "no_replay_model.safetensors"),
+            "with_replay_model": str(out_dir / "with_replay_model.safetensors"),
+        },
+    }
+    write_json(out_dir / "replay_summary.json", summary)
     return summary
