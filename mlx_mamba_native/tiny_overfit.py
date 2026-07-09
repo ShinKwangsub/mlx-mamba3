@@ -4,9 +4,11 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import mlx.utils as utils
 
 from .model import MambaConfig, MambaLMHeadModel
 from .toy_tokenizer import CharTokenizer
+from .train import convert_to_lora, save_lora_adapters
 from .weights import load_weights, save_weights
 
 
@@ -75,6 +77,26 @@ def train_phase(model, optimizer, tokenizer, text: str, phase: str, steps: int, 
         append_jsonl(loss_path, {"phase": phase, "step": step, "loss": final})
 
     return {"phase": phase, "steps": steps, "initial_loss": initial, "final_loss": final}
+
+
+def scalar_parameter_count(parameters) -> int:
+    return sum(value.size for _, value in utils.tree_flatten(parameters))
+
+
+def parameter_snapshot(model, exclude_lora: bool = False):
+    return {
+        name: value
+        for name, value in utils.tree_flatten(model.parameters())
+        if not exclude_lora or not name.endswith((".lora_A", ".lora_B"))
+    }
+
+
+def max_parameter_diff(before: dict, after: dict) -> float:
+    if before.keys() != after.keys():
+        raise ValueError("Parameter keys changed during training")
+    if not before:
+        return 0.0
+    return max(float(mx.max(mx.abs(before[name] - after[name])).item()) for name in before)
 
 
 def write_samples(path: Path, samples: list[dict]):
@@ -229,4 +251,114 @@ def run_replay_comparison(
         },
     }
     write_json(out_dir / "replay_summary.json", summary)
+    return summary
+
+
+def run_finetuning_comparison(
+    out_dir: str | Path,
+    base_steps: int = 30,
+    adaptation_steps: int = 20,
+    learning_rate: float = 0.03,
+    lora_rank: int = 4,
+    lora_alpha: float = 8.0,
+    seed: int = 13,
+):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    tokenizer = CharTokenizer.from_text(BASE_CORPUS + ADAPTED_CORPUS)
+    tokenizer.save(str(out_dir / "tokenizer.json"))
+
+    mx.random.seed(seed)
+    base_model = MambaLMHeadModel(make_tiny_config(tokenizer.vocab_size))
+    base_optimizer = optim.Adam(learning_rate=learning_rate)
+    base_loss_path = out_dir / "base_loss_curve.jsonl"
+    base_loss_path.write_text("", encoding="utf-8")
+    base_result = train_phase(base_model, base_optimizer, tokenizer, BASE_CORPUS, "base", base_steps, base_loss_path)
+
+    base_checkpoint = out_dir / "base_model.safetensors"
+    save_weights(base_model, str(base_checkpoint))
+    base_loss_after_base = float(language_model_loss(base_model, *make_next_token_batch(tokenizer, BASE_CORPUS)).item())
+    adapted_loss_before_adaptation = float(
+        language_model_loss(base_model, *make_next_token_batch(tokenizer, ADAPTED_CORPUS)).item()
+    )
+
+    mode_specs = {
+        "full_no_replay": ("full", ADAPTED_CORPUS),
+        "full_with_replay": ("full", BASE_CORPUS + ADAPTED_CORPUS),
+        "lora_no_replay": ("lora", ADAPTED_CORPUS),
+        "lora_with_replay": ("lora", BASE_CORPUS + ADAPTED_CORPUS),
+    }
+    mode_results = {}
+
+    for mode, (method, adaptation_text) in mode_specs.items():
+        mx.random.seed(seed + 1)
+        model = MambaLMHeadModel(make_tiny_config(tokenizer.vocab_size))
+        load_weights(model, str(base_checkpoint))
+        if method == "lora":
+            convert_to_lora(model, r=lora_rank, alpha=lora_alpha)
+
+        base_parameters_before = parameter_snapshot(model, exclude_lora=method == "lora")
+        base_loss_before_adaptation = float(
+            language_model_loss(model, *make_next_token_batch(tokenizer, BASE_CORPUS)).item()
+        )
+        mode_adapted_loss_before_adaptation = float(
+            language_model_loss(model, *make_next_token_batch(tokenizer, ADAPTED_CORPUS)).item()
+        )
+        trainable_parameter_count = scalar_parameter_count(model.trainable_parameters())
+        total_parameter_count = scalar_parameter_count(model.parameters())
+        optimizer = optim.Adam(learning_rate=learning_rate)
+        loss_path = out_dir / f"{mode}_loss_curve.jsonl"
+        loss_path.write_text("", encoding="utf-8")
+
+        train_result = train_phase(model, optimizer, tokenizer, adaptation_text, mode, adaptation_steps, loss_path)
+        base_parameters_after = parameter_snapshot(model, exclude_lora=method == "lora")
+
+        if method == "lora":
+            checkpoint_path = out_dir / f"{mode}_adapter.safetensors"
+            save_lora_adapters(model, str(checkpoint_path))
+        else:
+            checkpoint_path = out_dir / f"{mode}_model.safetensors"
+            save_weights(model, str(checkpoint_path))
+
+        mode_results[mode] = {
+            "method": method,
+            "replay": mode.endswith("with_replay"),
+            "train": train_result,
+            "trainable_parameter_count": trainable_parameter_count,
+            "total_parameter_count": total_parameter_count,
+            "base_parameter_max_diff": max_parameter_diff(base_parameters_before, base_parameters_after),
+            "base_loss_before_adaptation": base_loss_before_adaptation,
+            "adapted_loss_before_adaptation": mode_adapted_loss_before_adaptation,
+            "base_loss_after_adaptation": float(
+                language_model_loss(model, *make_next_token_batch(tokenizer, BASE_CORPUS)).item()
+            ),
+            "adapted_loss_after_adaptation": float(
+                language_model_loss(model, *make_next_token_batch(tokenizer, ADAPTED_CORPUS)).item()
+            ),
+            "loss_curve": str(loss_path),
+            "checkpoint": str(checkpoint_path),
+            "sample": generation_sample(model, tokenizer, "광섭은 맘바"),
+        }
+
+    summary = {
+        "base_steps": base_steps,
+        "adaptation_steps": adaptation_steps,
+        "learning_rate": learning_rate,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "seed": seed,
+        "device": str(mx.default_device()),
+        "vocab_size": tokenizer.vocab_size,
+        "base": base_result,
+        "base_loss_after_base": base_loss_after_base,
+        "adapted_loss_before_adaptation": adapted_loss_before_adaptation,
+        "modes": mode_results,
+        "artifacts": {
+            "base_loss_curve": str(base_loss_path),
+            "tokenizer": str(out_dir / "tokenizer.json"),
+            "base_model": str(base_checkpoint),
+        },
+    }
+    write_json(out_dir / "finetuning_summary.json", summary)
     return summary

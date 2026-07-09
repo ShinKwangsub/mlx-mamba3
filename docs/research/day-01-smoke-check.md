@@ -305,3 +305,76 @@ With replay adapted loss: 0.6531
 2. replay 비율을 바꿨을 때 base/adapted loss tradeoff가 어떻게 움직이는지 확인한다.
 3. loss와 sample을 함께 보여주는 작은 Markdown report를 생성한다.
 4. toy tokenizer 대신 byte-level tokenizer를 붙였을 때 padded vocab 문제와 generation sample이 어떻게 달라지는지 확인한다.
+
+위 1번 후보는 `examples/tiny_finetuning_comparison.py`와 `tests/test_tiny_finetuning_comparison.py`로 최소 구현과 검증을 완료했다.
+
+비교 조건:
+
+- 공통 base checkpoint에서 각각 새 모델을 시작한다.
+- full fine-tuning과 LoRA를 각각 replay 없음/있음으로 나눠 총 4개 조건을 비교한다.
+- 모든 조건에서 adaptation step과 learning rate는 동일하게 둔다.
+- LoRA는 rank 4, alpha 8로 `in_proj`와 `out_proj`에 적용한다.
+- 학습 전후 base parameter의 최대 절댓값 차이를 측정해 실제 동결 여부를 확인한다.
+
+실행:
+
+```bash
+PYTHONPATH=. .venv/bin/python examples/tiny_finetuning_comparison.py --device cpu --out-dir /tmp/mlx-mamba3-finetuning-comparison
+PYTHONPATH=. .venv/bin/python -m unittest tests.test_tiny_finetuning_comparison -v
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
+```
+
+결과:
+
+```text
+tests.test_tiny_finetuning_comparison: Ran 3 tests, OK
+전체 테스트: Ran 22 tests, OK
+```
+
+CPU에서 세 번 반복해 동일하게 나온 CLI 결과:
+
+| 조건 | base loss | adapted loss | 학습 parameter 수 | base parameter 최대 변화 |
+|---|---:|---:|---:|---:|
+| base 학습 직후 | 0.5572 | 4.3268 | - | - |
+| full, replay 없음 | 7.6073 | 0.2258 | 9,304 | 3.0627 |
+| full, replay 있음 | 0.6714 | 0.3958 | 9,304 | 2.8290 |
+| LoRA, replay 없음 | 3.4922 | 3.7978 | 1,144 | 0.0000 |
+| LoRA, replay 있음 | 1.2977 | 1.4178 | 1,144 | 0.0000 |
+
+추가 관찰:
+
+- LoRA가 학습한 parameter는 full fine-tuning의 약 12.3%였다.
+- 이 toy 설정에서 full checkpoint는 약 37KB, LoRA adapter는 약 4.8KB였다.
+- LoRA에서는 base parameter가 실제로 바뀌지 않았다.
+- 그러나 LoRA도 base corpus loss를 높였다. base weight 보존과 기존 기능 보존은 같은 개념이 아니다.
+- 이번 설정에서는 full fine-tuning과 replay 조합이 두 corpus의 loss를 가장 낮게 만들었다. LoRA가 항상 망각을 더 잘 막는다는 가정은 지지되지 않았다.
+- LoRA에도 replay를 섞으면 replay가 없는 LoRA보다 base loss는 낮아졌지만, adapted loss도 충분히 낮아지지는 않았다.
+- CPU에서는 같은 seed로 전체 실험을 세 번 반복했을 때 모든 비교 loss가 정확히 일치했다.
+
+재현성 문제:
+
+- GPU에서는 같은 seed와 같은 명령을 단독으로 세 번 실행해도 base 학습 후 loss가 `0.1781`, `0.2697`, `0.4149`로 달라졌다.
+- 초기 난수 배열, 초기 model parameter checksum, 초기 loss는 실행마다 일치했다.
+- 학습 loss는 3 step까지 일치했고 4 step부터 작은 차이가 시작되어 이후 크게 벌어졌다.
+- CPU에서는 세 번 모두 정확히 일치했으므로 GPU backward/reduction 과정의 미세한 수치 비결정성이 고학습률에서 증폭되는 것이 현재 가장 유력하다. 정확히 어느 연산이 원인인지는 아직 분리하지 않았다.
+- CLI 기본 device는 실제 MLX 실행 경로인 GPU다. 정확한 기준표를 만들 때는 `--device cpu`를 사용해야 한다.
+
+중요한 한계:
+
+- 같은 learning rate와 step 수는 실행 조건을 같게 만든 것일 뿐, 두 방식에 최적인 공정한 hyperparameter 비교를 보장하지 않는다.
+- LoRA는 full fine-tuning보다 학습 가능한 parameter가 적어 같은 step에서 수렴이 느릴 수 있다.
+- corpus와 모델이 지나치게 작아 수치의 순위를 일반화할 수 없다.
+- loss만 측정했으며 실제 언어 능력, 대화 품질, 장기 기억, online learning 안정성을 측정한 것이 아니다.
+- LoRA adapter가 작다는 사실은 계산량과 메모리가 정확히 12.3%라는 뜻이 아니다. forward/backward 과정에는 frozen base model도 필요하다.
+- GPU 단일 실행의 exact loss를 고정된 기준값으로 사용하면 안 된다. 여러 seed/반복의 평균과 분산을 기록하는 절차가 추가로 필요하다.
+
+이번 검증의 결론:
+
+> LoRA는 base weight를 보존하고 저장 artifact를 줄이는 데는 성공했지만, 기능적 망각을 자동으로 제거하지는 않았다. 현재 toy 조건에서는 replay의 영향이 LoRA 여부보다 더 크게 관찰되었다.
+
+다음 작은 검증 후보:
+
+1. replay에서 base/adapted corpus의 비율을 바꿔 loss tradeoff를 측정한다.
+2. LoRA learning rate와 step 수를 소규모로 바꿔 full 방식과의 비교가 설정 편향인지 확인한다.
+3. loss와 generation sample을 함께 보여주는 작은 Markdown report를 생성한다.
+4. toy tokenizer 대신 byte-level tokenizer를 붙여 padded vocab과 sample 변화를 확인한다.
